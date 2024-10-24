@@ -1,0 +1,21 @@
+SampleReference,ReactionTime,Temperature,Pressure,Median,TotalYield
+MP2_91_1_rerun long 1h,1,200,26,18,2.5
+MP2_84_1_rerun long 4h,4,200,26,18,41
+MP2_95_1_rerun long 6h ,6,200,26,16,62.4
+MP2_86_1_rerun long 8h,8,200,26,16,75
+MP2_93_1_rerun long 10h,10,200,26,12,70.3
+MP2_92_1_rerun long 15h,15,200,26,10,55.4
+MP2_98_1_rerun_long 15h,15,200,26,10,55
+MP2_99_5_rerun long 15h,15,200,26,10,57
+MP2_114_5_15h_hotGC_long,15,200,26,10,58
+MP2_85_1_rerun long 16h,16,200,26,11,54
+MP2_96_1_rerun long 17h,17,200,26,10,45
+MP2_94_1_rerun long 20h,20,200,26,10,48
+MP2_87_1_rerun long 24h,24,200,26,9,35
+MP2_118_1 6h replicate,6,200,26,17,54
+MP2_101_1_rerun long ML probe,3,250,18,17,40
+MP2_101_5_rerun long ML probe,8,200,42,16,83
+MP2_103_1_rerun long ML probe,3,225,42,13,79
+MP2_103_5_rerun long ML probe,8,200,18,11,56
+MP2_120_5_ML probe replicate,3,225,42,12,77.5
+MP2_120_5_ML probe replicate,3,225,42,13,76.4
