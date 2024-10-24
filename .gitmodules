@@ -1,0 +1,3 @@
+[submodule "multibax-sklearn"]
+	path = multibax-sklearn
+	url = git@github.com:src47/multibax-sklearn.git
