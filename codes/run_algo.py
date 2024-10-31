@@ -2,6 +2,7 @@ import sys
 
 sys.path.extend(["../multibax-sklearn"])
 from src.models import MGPR, fit_matern_hypers
+from src.algorithms import SubsetAlgorithm
 import warnings
 
 
@@ -186,8 +187,17 @@ def add_noise_fn(X, Y, noise_kwargs):
         # Scaling noise by Dataset standard Deviation
         noise = sigma * rng.normal(size=(Y.shape), scale=np.std(Y, axis=0))
         Y = Y + noise
+    elif noise_kwargs["type"] == "yield_skew":
+        sigma = noise_kwargs["scale"]
+        # Scaling noise by Dataset standard Deviation
+        noise = sigma * rng.normal(size=(Y.shape), scale=np.std(Y, axis=0))
+        
+        # Add some skewness so that higher yields are noisier
+        noise[:, 0] *= (1+noise_kwargs['skew_size']*Y[:, 0]/Y[:, 0].max(axis=0))
+        Y = Y + noise
     else:
         Y = Y
+        
     Y[Y < 0] = 0.0  # can't have negative yields
     Y[:, 1] = np.round(Y[:, 1], 0)  # Need Median to be an integer
 
@@ -228,9 +238,6 @@ def fetch_data(simulator_type, add_noise, noise_kwargs):
     return X, Y, X_norm, Y_norm, scalers
 
 
-from src.algorithms import SubsetAlgorithm
-
-
 class TopKBinAlgorithm(SubsetAlgorithm):
     def __init__(self, user_algo_params):
         super().__init__(user_algo_params)
@@ -263,7 +270,7 @@ class TopKBinAlgorithm(SubsetAlgorithm):
 
 if __name__ == "__main__":
     X, Y, X_norm, Y_norm, scalers = fetch_data(
-        "parabola", True, {"type": "standard", "scale": 0.01}
+        "parabola", True, {"type": "yield_skew", "scale": 0.01, "skew_size": 20}
     )
 
     bins_start = [9, 11, 13, 15, 17]
@@ -461,4 +468,4 @@ if __name__ == "__main__":
     plt.ylabel("Max Acquired Yield")
     plt.xlabel("Number Acquired Points")
     plt.legend()
-    plt.savefig("../plot_outputs/sim_STDN_1%_PB_MIX.png")
+    plt.savefig("../plot_outputs/sim_SKEW_20_1%_PB_MIX.png")
