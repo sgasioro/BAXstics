@@ -95,6 +95,7 @@ class ProgramState:
         ct = len(collected_ids)
         ProgramState.latest_ct.value = ct
         ProgramState.setup_model()
+        ProgramState.disable_save_button.value = True
     
 
     @staticmethod
