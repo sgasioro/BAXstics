@@ -96,6 +96,7 @@ class ProgramState:
         ProgramState.latest_ct.value = ct
         ProgramState.setup_model()
         ProgramState.disable_save_button.value = True
+
     
 
     @staticmethod
@@ -109,6 +110,7 @@ class ProgramState:
         ProgramState.latest_ct.value = ct
         ProgramState.setup_model()
         ProgramState.disable_save_button.value = True
+
         
     
     @staticmethod
@@ -284,7 +286,7 @@ def Page():
                     solara.Info("File upload not supported in this environment")
                 solara.Button("Load latest dataset", color="primary", text=True, outlined=True, on_click=ProgramState.load_latest_dset)
                 # solara.Button("Save Iteration", color="primary", text=True, outlined=True, on_click=ProgramState.save_dataset_and_model)
-                solara.Button("Clear dataset", color="primary", text=True, outlined=True, on_click=ProgramState.reset)
+                
     
     if df is not None:
         with solara.Column():
