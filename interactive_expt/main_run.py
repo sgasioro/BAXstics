@@ -68,7 +68,7 @@ class ProgramState:
     latest_ct = solara.reactive(cast(Optional[int], None))
     nnext_batch = solara.reactive(False)
     got_next_measurement = solara.reactive(False)
-    disable_save_button = solara.reactive(False)
+    disable_save_button = solara.reactive(True)
     next_data = None
     median_new = solara.reactive(14)
     yield_new = solara.reactive(63.2)
