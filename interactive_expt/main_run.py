@@ -2,7 +2,7 @@ from pandas import DataFrame, read_csv
 
 from utils_activelearning import fetch_data, MODELS_DIR, DATASETS_DIR, MGPR, XCOLS, YCOLS, fit_matern_hypers, TopKBinAlgorithm, SCALERS, batch_acquisition
 import solara
-
+from plotly.subplots import make_subplots
 from solara.components.columns import Columns
 from solara.components.file_drop import FileDrop
 from typing import Optional, cast
@@ -10,6 +10,55 @@ from sklearn.gaussian_process.kernels import WhiteKernel, ConstantKernel, Matern
 import sys
 import numpy as np
 import plotly.graph_objects as go
+import json
+# Additions for Interface
+# UQ Plot
+# 3D Grid (of design space)
+# Slider | Box
+# Dataset Update Trigger save -> Button Pop up
+# Hypers chosen iteration -- append |
+# Throw in unit tests
+# Seeding (SKlearn-BAX)
+def check_within_error(y_true, y_pred, y_err):
+    """
+    Returns an array of size n where each element is 1 if the corresponding
+    row in y_true is entirely within the range of y_pred +/- y_err, otherwise 0.
+
+    Parameters:
+    y_true : np.array of shape (n, m)
+    y_pred : np.array of shape (n, m)
+    y_err  : np.array of shape (n, m)
+
+    Returns:
+    result : np.array of size (n) where each element is 1 or 0.
+    """
+    # Check if y_true is within the bounds of y_pred ± y_err
+    within_bounds = (y_true >= (y_pred - y_err)) & (y_true <= (y_pred + y_err))
+
+    # For each row, check if all values are within the bounds
+    result = np.all(within_bounds, axis=1).astype(int)
+
+    return result
+
+def kernel_hyperparams_to_dict(kernel):
+    params = kernel.get_params()
+    hyperparams = {}
+    for key, value in params.items():
+        if isinstance(value, (float, int, str, tuple)):  # Simple types
+            hyperparams[key] = value
+        elif hasattr(value, 'bounds') and hasattr(value, 'length_scale'):  # Example: RBF, ConstantKernel
+            hyperparams[key] = {
+                "bounds": np.asarray(value.bounds).tolist(),  # Convert numpy array to list
+                "hyperparameter": np.asarray(value.length_scale).tolist() if hasattr(value, "length_scale") else None
+            }
+        elif hasattr(value, 'k1') and hasattr(value, 'k2'):  # For Sum or Product kernels
+            hyperparams[key] = {
+                "k1": kernel_hyperparams_to_dict(value.k1),
+                "k2": kernel_hyperparams_to_dict(value.k2),
+            }
+        else:
+            hyperparams[key] = str(value)  # Catch-all for unexpected types
+    return hyperparams
 
 class ProgramState:
 
@@ -19,6 +68,7 @@ class ProgramState:
     latest_ct = solara.reactive(cast(Optional[int], None))
     nnext_batch = solara.reactive(False)
     got_next_measurement = solara.reactive(False)
+    disable_save_button = solara.reactive(False)
     next_data = None
     median_new = solara.reactive(14)
     yield_new = solara.reactive(63.2)
@@ -49,6 +99,7 @@ class ProgramState:
         ct = len(collected_ids)
         ProgramState.latest_ct.value = ct
         ProgramState.setup_model()
+        ProgramState.disable_save_button.value = True
         
     
     @staticmethod
@@ -77,17 +128,13 @@ class ProgramState:
                 length_scale=n_features * [1.0],
                 length_scale_bounds=n_features * [[0.01, 3.0]],
             ) + WhiteKernel(
-                noise_level=0.1, noise_level_bounds="fixed"
+                noise_level=0.01, noise_level_bounds="fixed"
             )
             kernel_initial_list = n_properties * [kernel_initial]
             models = MGPR(kernel_list=kernel_initial_list)
 
         kernel_initial_list = models.kernel_list
-        kernel_list = fit_matern_hypers(
-                        x_train=x_train,
-                        y_train=y_train,
-                        kernel_list=kernel_initial_list,
-                    )
+        kernel_list = fit_matern_hypers(x_train=x_train,y_train=y_train,kernel_list=kernel_initial_list)
 
         ProgramState.all_models = MGPR(kernel_list=kernel_list)
 
@@ -132,7 +179,8 @@ class ProgramState:
             n_posterior_samples,
             batch_size,
         )
-        posterior_mean, posterior_std = multi_gpr.predict(X_norm)
+        posterior_mean, posterior_std = model.predict(X_norm)
+
         plot_means = SCALERS[1].inverse_transform(posterior_mean)
         df["Predicted Norm Median"] = posterior_mean[:, 1]
         df["Predicted Norm Yield"] = posterior_mean[:, 0]
@@ -147,6 +195,7 @@ class ProgramState:
         ProgramState.all_models = model
         ProgramState.latest_ct.value = None
         ProgramState.got_next_measurement.value = True
+        ProgramState.disable_save_button.value = False
 
     @staticmethod
     def reset():
@@ -169,7 +218,23 @@ class ProgramState:
         model_file_2 = MODELS_DIR / f"model_{ct}.pkl"
         ProgramState.all_models.save(model_file_1)
         ProgramState.all_models.save(model_file_2)
+
+        hypers_file_1 = MODELS_DIR / f"hypers_latest.json"
+        hypers_file_2 = MODELS_DIR / f"hypers_{ct}.json"
+
+        with open(hypers_file_1, "w") as f:
+            kl = ProgramState.all_models.kernel_list
+            print(kernel_hyperparams_to_dict(kl[0]))
+            hp_list = [kernel_hyperparams_to_dict(k) for k in kl]
+            print(hp_list)
+            json.dump(hp_list, f)
+
+        with open(hypers_file_2, "w") as f:
+            json.dump(ProgramState.all_models.kernel_list, f)
+        
+        
         ProgramState.latest_ct.value = ct
+        ProgramState.disable_save_button.value = True
 
     @staticmethod
     def add_data_point_to_df():
@@ -202,7 +267,7 @@ def Page():
                 else:
                     solara.Info("File upload not supported in this environment")
                 solara.Button("Load latest dataset", color="primary", text=True, outlined=True, on_click=ProgramState.load_latest_dset)
-                solara.Button("Save Iteration", color="primary", text=True, outlined=True, on_click=ProgramState.save_dataset_and_model)
+                # solara.Button("Save Iteration", color="primary", text=True, outlined=True, on_click=ProgramState.save_dataset_and_model)
                 solara.Button("Clear dataset", color="primary", text=True, outlined=True, on_click=ProgramState.reset)
     
     if df is not None:
@@ -230,8 +295,21 @@ def Page():
                     marker_line_width=2, marker_size=15,)
             fig = go.Figure()
             fig.add_trace(scat_1)
-            fig.update_layout(title=dict(text="Experimental Data"),
-                  template="plotly_white")
+            
+            fig.update_layout(
+                        title=dict(text="Experimental Data"),
+                        template="plotly_white", 
+                        xaxis=dict(
+                            title=dict(
+                                text="Median no. of C atoms"
+                            )
+                        ),
+                        yaxis=dict(
+                            title=dict(
+                                text="Yield (%)"
+                            )
+                        ),
+                    )
             solara.FigurePlotly(fig)
 
             solara.Checkbox(label="Get 2 datapoints instead of 1", value=ProgramState.nnext_batch)
@@ -244,17 +322,26 @@ def Page():
                         mode='markers',
                         name='Predicted Data',
                         marker_line_color="midnightblue", marker_color="lightskyblue",
-                        marker_line_width=2, marker_size=15,)
+                        marker_line_width=2, marker_size=15, visible='legendonly')
                     fig_2.add_trace(scat_2)
                     if ProgramState.next_data is not None:
                         dfnext =df.loc[ProgramState.next_data]
                         scat_n = go.Scatter(x=dfnext[f"Predicted {YCOLS[1]}"], y=dfnext[f"Predicted {YCOLS[0]}"],
                         mode='markers',
                         marker_symbol="x",
-                        name='Predicted Data',
+                        name='Next Measurement',
                         marker_line_color="Red", marker_color="Red",
                         marker_line_width=2, marker_size=15,)
                         fig_2.add_trace(scat_n)
+    
+                    scat_4 = go.Scatter(x=dfplt[f"Predicted {YCOLS[1]}"], y=dfplt[f"Predicted {YCOLS[0]}"],
+                        mode='markers',
+                        name='Expt Data',
+                        marker_symbol="x-thin",
+                        marker_line_color="green", marker_color="green",
+                        marker_line_width=2, marker_size=15,)
+                    fig_2.add_trace(scat_4)
+                #
 
 
                 scat_3 = go.Scatter(x=dfplt[YCOLS[1]], y=dfplt[YCOLS[0]],
@@ -263,11 +350,53 @@ def Page():
                     marker_symbol="x-thin",
                     marker_line_color="black", marker_color="black",
                     marker_line_width=2, marker_size=15,)
-                #
+                
                 fig_2.add_trace(scat_3)
-                fig_2.update_layout(title=dict(text="Predicted Measurement"),
-                  template="plotly_white")
+                fig_2.update_layout(
+                        title=dict(text="Predicted Measurement"),
+                        template="plotly_white", 
+                        xaxis=dict(
+                            title=dict(
+                                text="Median no. of C atoms"
+                            )
+                        ),
+                        yaxis=dict(
+                            title=dict(
+                                text="Yield (%)"
+                            )
+                        ),
+                    )
                 solara.FigurePlotly(fig_2)
+            
+            disabled_save_button = True
+            if ProgramState.got_next_measurement:
+                disabled_save_button = False
+                fig_3 = make_subplots(rows=1, cols=2)
+                if f"Predicted {YCOLS[1]}" in df.columns:
+                    fig_3.add_trace(
+                    go.Scatter(x=dfplt[f"Predicted {YCOLS[1]}"], y=dfplt[f"{YCOLS[1]}"],mode='markers',),
+                    row=1, col=1
+                    )
+
+                    fig_3.add_trace(
+                    go.Scatter(x=dfplt[f"{YCOLS[1]}"], y=dfplt[f"{YCOLS[1]}"],mode='lines',),
+                    row=1, col=1
+                    )
+
+                    fig_3.add_trace(
+                    go.Scatter(x=dfplt[f"Predicted {YCOLS[0]}"], y=dfplt[f"{YCOLS[0]}"],mode='markers',),
+                    row=1, col=2
+                    )
+                    fig_3.add_trace(
+                    go.Scatter(x=dfplt[f"{YCOLS[0]}"], y=dfplt[f"{YCOLS[0]}"],mode='lines',),
+                    row=1, col=2
+                    )
+
+                    #fig_3.update_layout(
+                    #    title=dict(text="Predicted Measurement"),
+                    #)
+
+                    #solara.FigurePlotly(fig_3)
             if ProgramState.got_next_measurement:
                 if ProgramState.next_data is not None:
                     ndatas = len(ProgramState.next_data)
@@ -294,3 +423,6 @@ def Page():
                         solara.SliderFloat("Yield of new point", value=ProgramState.yield_new2, min=0, max=100)
                         solara.Markdown(f"**Yield value**: {ProgramState.yield_new2.value}")
                         solara.Button("Update Data", color="primary", text=True, outlined=True, on_click=ProgramState.add_2data_point_to_df)
+
+
+            solara.Button("Save experiment", color="primary", text=True, outlined=True, on_click=ProgramState.save_dataset_and_model, disabled=ProgramState.disable_save_button.value)
