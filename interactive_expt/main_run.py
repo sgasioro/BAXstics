@@ -19,6 +19,14 @@ import json
 # Hypers chosen iteration -- append |
 # Throw in unit tests
 # Seeding (SKlearn-BAX)
+import random
+
+SEED = 0
+def set_all_seeds(seed):
+    np.random.seed(seed)
+    random.seed(seed)
+
+
 def check_within_error(y_true, y_pred, y_err):
     """
     Returns an array of size n where each element is 1 if the corresponding
@@ -141,6 +149,7 @@ class ProgramState:
     @staticmethod   
     def update_model_get_next_measurement():
         df = ProgramState.df.value
+        set_all_seeds(0)
         if ProgramState.nnext_batch.value:
             batch_size = 2
         else:
@@ -195,7 +204,7 @@ class ProgramState:
         ProgramState.all_models = model
         ProgramState.latest_ct.value = None
         ProgramState.got_next_measurement.value = True
-        ProgramState.disable_save_button.value = False
+        #ProgramState.disable_save_button.value = False
 
     @staticmethod
     def reset():
@@ -224,13 +233,17 @@ class ProgramState:
 
         with open(hypers_file_1, "w") as f:
             kl = ProgramState.all_models.kernel_list
-            print(kernel_hyperparams_to_dict(kl[0]))
+            
             hp_list = [kernel_hyperparams_to_dict(k) for k in kl]
-            print(hp_list)
+            
             json.dump(hp_list, f)
 
         with open(hypers_file_2, "w") as f:
-            json.dump(ProgramState.all_models.kernel_list, f)
+            kl = ProgramState.all_models.kernel_list
+            
+            hp_list = [kernel_hyperparams_to_dict(k) for k in kl]
+            
+            json.dump(hp_list, f)
         
         
         ProgramState.latest_ct.value = ct
@@ -241,12 +254,14 @@ class ProgramState:
         df = ProgramState.df.value
         df[YCOLS[0]][ProgramState.next_data[0]] = ProgramState.yield_new.value
         df[YCOLS[1]][ProgramState.next_data[0]] = ProgramState.median_new.value
+        ProgramState.disable_save_button.value = False
     
     @staticmethod
     def add_2data_point_to_df():
         df = ProgramState.df.value
         df[YCOLS[0]][ProgramState.next_data[1]] = ProgramState.yield_new2.value
         df[YCOLS[1]][ProgramState.next_data[1]] = ProgramState.median_new2.value
+        ProgramState.disable_save_button.value = False
 
 @solara.component
 def Page():
