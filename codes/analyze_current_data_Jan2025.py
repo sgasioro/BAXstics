@@ -19,7 +19,7 @@ import warnings
 from sklearn.preprocessing import MinMaxScaler
 from src.acquisition import multiproperty_infobax, multiproperty_meanbax
 from src.algorithms import SubsetAlgorithm
-
+from matplotlib.animation import ArtistAnimation, PillowWriter
 
 XSCALEARR = np.array([[1, 200, 18], [24, 250, 50]])
 YSCALEARR = np.array([[0, 8], [100, 20]])
@@ -163,11 +163,24 @@ if __name__ == "__main__":
         )
     )
 
-    Y_pred_mu, Y_pred_sigma = trained_model.predict(X_predict_norm)
+    acquisition_function_info_bax, trained_model_2, term1, term2 = (
+        multiproperty_infobax(
+            x_domain=X_predict_norm,
+            x_train=X_norm,
+            y_train=Y_norm,
+            model=multi_gpr,
+            algorithm=algorithm,
+            n_posterior_samples=10,
+            verbose=False,
+        )
+    )
+
+    Y_pred_mu, Y_pred_sigma = trained_model_2.predict(X_predict_norm)
+
     Y_predict = SCALERS[1].inverse_transform(Y_pred_mu)
 
     if plot_things:
-        fig, axs = plt.subplots(1, 3, figsize=(8, 3), dpi=400)
+        fig, axs = plt.subplots(1, 3, figsize=(8, 3), dpi=600)
         fig: Figure
         axs: List[Axes]
 
@@ -178,6 +191,13 @@ if __name__ == "__main__":
             s=0.5,
             alpha=0.7,
             cmap="viridis",
+        )
+        axs[0].scatter(
+            X_predict[acquisition_function_meanbax > 0, 0],
+            X_predict[acquisition_function_meanbax > 0, 2],
+            s=0.5,
+            marker="x",
+            color="k",
         )
         # Method 1: Using Tab20 colormap
         tab20 = plt.cm.tab20(np.linspace(0, 1, 20))  # Get all 20 colors
@@ -195,10 +215,18 @@ if __name__ == "__main__":
             cmap=custom_cmap,
         )
 
+        axs[1].scatter(
+            X_predict[acquisition_function_meanbax > 0, 0],
+            X_predict[acquisition_function_meanbax > 0, 2],
+            s=0.5,
+            marker="x",
+            color="k",
+        )
+
         mbax_acqfn_plt = axs[2].scatter(
             X_predict[:, 0],
             X_predict[:, 2],
-            c=acquisition_function_meanbax,
+            c=acquisition_function_info_bax,
             s=0.5,
             alpha=0.7,
             cmap="Greens",
@@ -213,6 +241,68 @@ if __name__ == "__main__":
         cbar_2 = fig.colorbar(median_plot, ax=axs[1])
         cbar_2.set_label("Median C")
         cbar_3 = fig.colorbar(mbax_acqfn_plt, ax=axs[2])
-        cbar_3.set_label("Mean BAX acqfn")
+        cbar_3.set_label("Info BAX acqfn")
         fig.tight_layout()
-        fig.savefig("acqnvis.png")
+        fig.savefig("acqnvis.pdf")
+
+    plot_posterior = True
+    if plot_posterior:
+        Y_samples = trained_model_2.sample_y(X_predict_norm, 10)
+        print(Y_samples.shape[2])
+        fig, axs = plt.subplots(1, 2, figsize=(8, 3), dpi=600)
+        fig: Figure
+        axs: List[Axes]
+
+        tab20 = plt.cm.tab20(np.linspace(0, 1, 20))  # Get all 20 colors
+        colors = tab20[: len(bins_start)]
+
+        bounds = bins_start + [bins_end[-1]]
+        custom_cmap = mcolors.ListedColormap(colors)
+        norm = mcolors.BoundaryNorm(bounds, custom_cmap.N)
+        frames = []
+        for i in range(0, Y_samples.shape[2]):
+            Y_predict_posterior = SCALERS[1].inverse_transform(Y_samples[:, :, i])
+            yield_plt = axs[0].scatter(
+                X_predict[:, 0],
+                X_predict[:, 2],
+                c=Y_predict_posterior[:, 0],
+                s=0.5,
+                alpha=0.7,
+                cmap="viridis",
+                vmax=100,
+                vmin=0,
+            )
+
+            # Method 1: Using Tab20 colormap
+
+            median_plot = axs[1].scatter(
+                X_predict[:, 0],
+                X_predict[:, 2],
+                c=Y_predict_posterior[:, 1],
+                s=0.5,
+                alpha=0.7,
+                cmap=custom_cmap,
+            )
+
+            title1 = axs[0].text(
+                0.5, 1.05, f"Posterior {i}", ha="center", transform=axs[0].transAxes
+            )
+
+            title2 = axs[1].text(
+                0.5, 1.05, f"Posterior {i}", ha="center", transform=axs[1].transAxes
+            )
+            frames.append([yield_plt, median_plot, title1, title2])
+
+        cbar_1 = fig.colorbar(yield_plt, ax=axs[0])
+        cbar_1.set_label("Liquid Yield (%)")
+        cbar_2 = fig.colorbar(median_plot, ax=axs[1])
+        cbar_2.set_label("Median C")
+        fig.tight_layout()
+
+        anim = ArtistAnimation(
+            fig, frames, interval=500, blit=True, repeat=True  # 500ms between frames
+        )
+
+        # Save as GIF
+        writer = PillowWriter(fps=2)  # 2 frames per second
+        anim.save("./posterior_samples.gif", writer=writer)
