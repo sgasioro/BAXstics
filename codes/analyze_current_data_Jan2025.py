@@ -17,11 +17,17 @@ from typing import List
 from src.models import MGPR, fit_matern_hypers
 import warnings
 from sklearn.preprocessing import MinMaxScaler
-from src.acquisition import multiproperty_infobax, multiproperty_meanbax
+from src.acquisition import (
+    multiproperty_infobax,
+    multiproperty_meanbax,
+    multiproperty_switchbax,
+    run_acquisition,
+)
 from src.algorithms import SubsetAlgorithm
 from matplotlib.animation import ArtistAnimation, PillowWriter
+from pandas import DataFrame, read_csv
 
-XSCALEARR = np.array([[1, 200, 18], [24, 250, 50]])
+XSCALEARR = np.array([[1, 200, 18], [24, 250, 66]])
 YSCALEARR = np.array([[0, 8], [100, 20]])
 
 x_scaler = MinMaxScaler(feature_range=(0, 1))
@@ -34,6 +40,121 @@ SCALERS = [x_scaler, y_scaler]
 warnings.filterwarnings("ignore")
 
 plt.style.use("../multibax-sklearn/src/matplotlib.rc")
+
+SEED = 0
+import random
+
+
+def set_all_seeds(seed):
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def run_hall_acquisition(
+    x_train,
+    y_train,
+    X,
+    Y,
+    strategy,
+    algorithm,
+    model,
+    collected_ids,
+    n_posterior_samples,
+    prevent_requery=True,
+    batch_strategy=None,
+):
+    # Ideally this would just be handled in an argument to run_acquisition, but to keep the repo
+    _, _, trained_model, collected_ids, acquisition_function, switch_strategy = (
+        run_acquisition(
+            x_train.copy(),
+            y_train.copy(),
+            X.copy(),
+            Y.copy(),
+            strategy,
+            algorithm,
+            model,
+            collected_ids.copy(),
+            n_posterior_samples,
+            prevent_requery=prevent_requery,
+        )
+    )
+    # Get what would be the next acquired index
+    next_id = collected_ids[-1]
+    print(next_id, "!")
+    x_next = X[next_id]
+
+    # Swap out next y with posterior mean prediction
+    if batch_strategy == "post_mean":
+        posterior_mean, posterior_std = trained_model.predict(x_next.reshape(1, -1))
+        y_next = posterior_mean
+    else:
+        y_next = Y[next_id]
+
+    # Add to training set
+    x_train = np.vstack((x_train, x_next))
+    y_train = np.vstack((y_train, y_next))
+
+    return (
+        x_train,
+        y_train,
+        trained_model,
+        collected_ids,
+        acquisition_function,
+        switch_strategy,
+    )
+
+
+def batch_acquisition(
+    x_train,
+    y_train,
+    X,
+    Y,
+    strategy,
+    algorithm,
+    model,
+    collected_ids,
+    n_posterior_samples,
+    batch_size,
+    prevent_requery=True,
+    batch_strategy="post_mean",
+):
+    # Copy so we don't mix up real vs hallucinated
+    x_train_here = x_train.copy()
+    y_train_here = y_train.copy()
+
+    X_here = X.copy()
+    Y_here = Y.copy()
+
+    collected_ids_here = collected_ids.copy()
+
+    # Loop through hallucination and get next idxs
+    hall_idxs = []
+    for i_hall in range(batch_size):
+        (
+            x_train_here,
+            y_train_here,
+            trained_model_here,
+            collected_ids_here,
+            acquisition_function_here,
+            switch_strategy,
+        ) = run_hall_acquisition(
+            x_train_here,
+            y_train_here,
+            X_here,
+            Y_here,
+            strategy,
+            algorithm,
+            model,
+            collected_ids_here,
+            n_posterior_samples,
+            prevent_requery=True,
+            batch_strategy=batch_strategy,
+        )
+        hall_idxs.append(collected_ids_here[-1])
+
+    # Return batch
+
+    return hall_idxs, trained_model_here
 
 
 # Create a custom colormap function
@@ -70,11 +191,12 @@ class TopKBinAlgorithm(SubsetAlgorithm):
                 list_of_max_ids = list_of_max_ids + list(
                     ids3[np.flip(np.argsort(vals))[:topk_num]]
                 )
-
+        # print(f_1[list(set(list_of_max_ids))])
         return list(set(list_of_max_ids))
 
 
 if __name__ == "__main__":
+    set_all_seeds(SEED)
     datapath: str = "/pscratch/sd/a/akashr97/BAXstics/codes/expt_data_jan2025.csv"
     xcols: List[str] = ["Time", "Temperature", "Pressure"]
     ycols: List[str] = ["Yield", "Median", "Gas Yield"]
@@ -85,6 +207,8 @@ if __name__ == "__main__":
         columns_x=xcols,
         columns_y=ycols,
     )
+
+    print(X.shape)
 
     # Seperate the gas yield seperately, probably don't
     # need to do this
@@ -137,8 +261,8 @@ if __name__ == "__main__":
         }
     )
 
-    valid_times = np.arange(1.0, 24.0, 0.5)
-    valid_pressures = np.arange(18.0, 50.0, 2)
+    valid_times = np.arange(1.0, 25.0, 1.0)
+    valid_pressures = np.arange(18.0, 66.0, 4)
 
     # Create meshgrid
     times_grid, pressures_grid = np.meshgrid(valid_times, valid_pressures)
@@ -149,6 +273,17 @@ if __name__ == "__main__":
     X_predict = np.column_stack(
         (times_grid.ravel(), 200 * np.ones(npts), pressures_grid.ravel())
     )
+
+    indices = []
+
+    # Convert the X1 array to a set of tuples
+    set_X1 = set(map(tuple, X))
+
+    # Iterate over each row in X2 and check if it is in the set of X1
+    for idx, row in enumerate(X_predict):
+        if tuple(row) in set_X1:
+            indices.append(idx)
+
     X_predict_norm = SCALERS[0].transform(X_predict)
     plot_things = True
 
@@ -163,6 +298,8 @@ if __name__ == "__main__":
         )
     )
 
+    print(X_predict[np.argmax(acquisition_function_meanbax)])
+
     acquisition_function_info_bax, trained_model_2, term1, term2 = (
         multiproperty_infobax(
             x_domain=X_predict_norm,
@@ -174,10 +311,48 @@ if __name__ == "__main__":
             verbose=False,
         )
     )
+    print(X_predict[np.argmax(acquisition_function_info_bax)])
 
     Y_pred_mu, Y_pred_sigma = trained_model_2.predict(X_predict_norm)
 
+    Y_pred_mu_tr, Y_pred_sigma_tr = trained_model_2.predict(X_norm)
+    Y_predict_mu_t2r = SCALERS[1].inverse_transform(Y_pred_mu_tr)
+    # for i in range(0, Y_pred_mu_tr.shape[0]):
+    #   print(X[i], Y_predict_mu_t2r[i])
+
     Y_predict = SCALERS[1].inverse_transform(Y_pred_mu)
+
+    strategy = "SwitchBAX"
+    n_posterior_samples = 10
+    batch_size = 2
+    add_ids = [148, 85, 199, 128]
+    indices = indices + add_ids
+    next_ids, model = batch_acquisition(
+        X_norm,
+        Y_norm,
+        X_predict_norm,
+        Y_predict,
+        strategy,
+        algorithm,
+        multi_gpr,
+        indices,
+        n_posterior_samples,
+        batch_size,
+    )
+    ct = 1
+    for idi in next_ids:
+        xid = X_predict[idi]
+        yid = Y_predict[idi]
+        print(
+            f"Prediction {ct} | ID {idi}: {xid[0]} h | {xid[1]} C | {xid[2]}bar : {yid[0]:.2f}% yield | {yid[1]:.2f} median"
+        )
+        ct += 1
+    print(X_predict[next_ids])
+    print(Y_predict[next_ids])
+    print("Hi")
+    ss = algorithm.identify_subspace(Y_pred_mu, X_predict_norm)
+    print(Y_predict[ss])
+    print("Bye")
 
     if plot_things:
         fig, axs = plt.subplots(1, 3, figsize=(8, 3), dpi=600)
@@ -188,9 +363,9 @@ if __name__ == "__main__":
             X_predict[:, 0],
             X_predict[:, 2],
             c=Y_predict[:, 0],
-            s=0.5,
+            s=10,
             alpha=0.7,
-            cmap="viridis",
+            cmap="Blues",
         )
         axs[0].scatter(
             X_predict[acquisition_function_meanbax > 0, 0],
@@ -204,30 +379,67 @@ if __name__ == "__main__":
         colors = tab20[: len(bins_start)]
 
         bounds = bins_start + [bins_end[-1]]
+        print(bounds)
         custom_cmap = mcolors.ListedColormap(colors)
         norm = mcolors.BoundaryNorm(bounds, custom_cmap.N)
+        c1 = Y_predict[:, 1] < bins_end[-1]
+        c2 = Y_predict[:, 1] > bins_start[0]
+        cond = (c1) & (c2)
         median_plot = axs[1].scatter(
-            X_predict[:, 0],
-            X_predict[:, 2],
-            c=Y_predict[:, 1],
-            s=0.5,
+            X_predict[cond, 0],
+            X_predict[cond, 2],
+            c=Y_predict[cond, 1],
+            s=10,
             alpha=0.7,
             cmap=custom_cmap,
         )
+        r = (~cond) & c1
+        axs[1].scatter(
+            X_predict[r, 0],
+            X_predict[r, 2],
+            c="gray",
+            s=10,
+            alpha=0.7,
+        )
+
+        r = (~cond) & c2
+        axs[1].scatter(
+            X_predict[r, 0],
+            X_predict[r, 2],
+            c="k",
+            s=10,
+            alpha=0.7,
+        )
+
+        # axs[1].scatter(
+        #    X_predict[acquisition_function_meanbax > 0, 0],
+        #    X_predict[acquisition_function_meanbax > 0, 2],
+        #    s=0.5,
+        #    marker="x",
+        #    color="k",
+        # )
 
         axs[1].scatter(
-            X_predict[acquisition_function_meanbax > 0, 0],
-            X_predict[acquisition_function_meanbax > 0, 2],
+            X_predict[indices, 0],
+            X_predict[indices, 2],
             s=0.5,
-            marker="x",
-            color="k",
+            marker="s",
+            color="b",
+        )
+
+        axs[1].scatter(
+            X_predict[next_ids, 0],
+            X_predict[next_ids, 2],
+            s=2,
+            marker="*",
+            color="g",
         )
 
         mbax_acqfn_plt = axs[2].scatter(
             X_predict[:, 0],
             X_predict[:, 2],
             c=acquisition_function_info_bax,
-            s=0.5,
+            s=10,
             alpha=0.7,
             cmap="Greens",
         )
@@ -243,9 +455,9 @@ if __name__ == "__main__":
         cbar_3 = fig.colorbar(mbax_acqfn_plt, ax=axs[2])
         cbar_3.set_label("Info BAX acqfn")
         fig.tight_layout()
-        fig.savefig("acqnvis.pdf")
+        fig.savefig("acqnvis.png")
 
-    plot_posterior = True
+    plot_posterior = False
     if plot_posterior:
         Y_samples = trained_model_2.sample_y(X_predict_norm, 10)
         print(Y_samples.shape[2])
