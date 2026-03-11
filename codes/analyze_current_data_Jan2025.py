@@ -197,7 +197,7 @@ class TopKBinAlgorithm(SubsetAlgorithm):
 
 if __name__ == "__main__":
     set_all_seeds(SEED)
-    datapath: str = "/pscratch/sd/a/akashr97/BAXstics/codes/expt_data_jan2025.csv"
+    datapath: str = "./expt_data_jan2025.csv"
     xcols: List[str] = ["Time", "Temperature", "Pressure"]
     ycols: List[str] = ["Yield", "Median", "Gas Yield"]
 
