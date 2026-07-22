@@ -1,3 +1,4 @@
+import os
 import sys
 
 sys.path.extend(["../multibax-sklearn"])
@@ -468,4 +469,5 @@ if __name__ == "__main__":
     plt.ylabel("Max Acquired Yield")
     plt.xlabel("Number Acquired Points")
     plt.legend()
+    os.makedirs("../plot_outputs", exist_ok=True)
     plt.savefig("../plot_outputs/sim_SKEW_20_1%_PB_MIX.png")

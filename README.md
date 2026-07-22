@@ -74,7 +74,7 @@ Create a virtual environment and install the dependencies:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r multibax-sklearn/requirements.txt
+pip install numpy scikit-learn pandas matplotlib scipy tqdm
 ```
 
 The interactive app additionally requires `solara` and `plotly`:
@@ -83,8 +83,13 @@ The interactive app additionally requires `solara` and `plotly`:
 pip install solara plotly
 ```
 
-> Tested with Python 3.8 / scikit-learn 1.5. See
-> `multibax-sklearn/requirements.txt` for pinned versions.
+> **Pinned versions:** `multibax-sklearn/requirements.txt` contains an exact,
+> known-good set of pins, but they target **Python 3.8** and do not build on
+> newer interpreters. To use them, create the environment with Python 3.8
+> explicitly (`python3.8 -m venv .venv`) and run
+> `pip install -r multibax-sklearn/requirements.txt`. Otherwise the unpinned
+> install above works on current Python (tested on 3.13 with numpy 2.x /
+> scikit-learn 1.9).
 
 ## Usage
 
@@ -115,6 +120,10 @@ solara run main_run.py
 Workflow inside the app: load a dataset (or the latest saved one) → **Get next
 experiment** → run that condition in the lab → enter the measured `Yield` and
 `Median` → **Save experiment**. The app supports single- or two-point batches.
+
+On a fresh clone there is no saved dataset yet, so start by dragging a CSV onto
+the file-drop area — the **Load latest dataset** button only works after a
+dataset has been saved (it reads `interactive_expt/data_expt/exptdata_latest.csv`).
 
 ### Reproduce paper figures
 
