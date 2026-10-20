@@ -16,10 +16,11 @@ import warnings
 import numpy as np
 import pandas as pd
 import torch
+from abbot import MockDatasetExperiment
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from baxstics import XCOLS, YCOLS, TopKPerBin, grid_index, make_campaign, raw_mean_std
+from baxstics import XCOLS, YCOLS, TopKPerBin, make_campaign, raw_mean_std
 
 warnings.filterwarnings("ignore")
 
@@ -42,9 +43,7 @@ def build_batch_array(Nmax, addtarget):
     raise ValueError("no batch sequence sums to the target")
 
 
-def max_in_bin(Y, collected_ids, bins_start, bins_end):
-    y_here = Y[collected_ids]
-
+def max_in_bin(y_here, bins_start, bins_end):
     max_y = []
     for i in range(len(bins_start)):
         bin_mask = (y_here[:, 1] >= bins_start[i]) & (y_here[:, 1] <= bins_end[i])
@@ -87,8 +86,10 @@ def fetch_data(simulator_type, add_noise, noise_kwargs):
     return X, Y
 
 
-def get_n_obtained(collected_ids, true_target_ids):
-    return len(set(collected_ids) & set(true_target_ids))
+def get_n_obtained(collected_X, target_X):
+    """How many target designs are among the collected ones."""
+    hits = torch.isclose(target_X.unsqueeze(1), collected_X.unsqueeze(0)).all(dim=-1)
+    return int(hits.any(dim=1).sum())
 
 
 def get_jaccard(predicted_ids, true_target_ids):
@@ -97,37 +98,35 @@ def get_jaccard(predicted_ids, true_target_ids):
 
 
 def run_strategy(strategy, X, Y, goal, n_initial, batches_arr, n_posterior_samples, repeat):
-    """One campaign; returns the collected grid indices and per-shot metrics."""
+    """One campaign replaying the grid's known outputs; returns the history and
+    per-shot metrics."""
     grid = torch.as_tensor(X, dtype=torch.double)
     bounds = {name: (X[:, j].min(), X[:, j].max()) for j, name in enumerate(XCOLS)}
     campaign = make_campaign(
         grid, goal, strategy=strategy, n_posterior_samples=n_posterior_samples, bounds=bounds
     )
+    experiment = MockDatasetExperiment(campaign.spec, grid, torch.as_tensor(Y))
     true_target_ids = goal.identify_subspace(torch.as_tensor(Y), grid)
+    target_X = grid[true_target_ids]
 
     np.random.seed(repeat)  # same initial points for every strategy
     torch.manual_seed(repeat)
-    collected_ids = list(np.random.choice(len(X), n_initial))
-    for i in collected_ids:
+    for i in np.random.choice(len(X), n_initial):
         campaign.record(grid[i], torch.as_tensor(Y[i]))
 
     n_obtained, jaccard, switched = [], [], []
     for batch_size in tqdm(batches_arr):
-        for cand in campaign.suggest(int(batch_size)):
-            idx = grid_index(grid, cand)
-            campaign.ingest(torch.as_tensor(Y[idx]), id=cand.id)
-            collected_ids.append(idx)
+        campaign.step(experiment, lambda y: y, n=int(batch_size))
         mean, _ = raw_mean_std(campaign, grid)
         predicted = goal.identify_subspace(mean, grid)
+        collected_X = campaign.history.designs
         # For metrics, one entry per acquired point in the batch
         for i_batch in range(batch_size - 1, -1, -1):
-            n_obtained.append(
-                get_n_obtained(collected_ids[: len(collected_ids) - i_batch], true_target_ids)
-            )
+            n_obtained.append(get_n_obtained(collected_X[: len(collected_X) - i_batch], target_X))
             jaccard.append(get_jaccard(predicted, true_target_ids))
             switched.append(campaign.policy.switched)
     metrics = {"n_obtained": n_obtained, "jaccard_posterior_index": jaccard, "switch_strategy": switched}
-    return collected_ids, metrics
+    return campaign.history, metrics
 
 
 if __name__ == "__main__":
@@ -150,23 +149,23 @@ if __name__ == "__main__":
     for strategy in strategies:
         for j in range(n_repeats):  # to see variance w.r.t initial datapoint choice
             print(f"Using strategy: {strategy}, repeat number: {j}")
-            collected_ids, m = run_strategy(
+            history, m = run_strategy(
                 strategy, X, Y, goal, n_initial, batches_arr, n_posterior_samples, j
             )
             for key, values in m.items():
                 metrics[strategy][key].append(values)
-        collected_collection[strategy] = collected_ids
+        collected_collection[strategy] = history.outputs.numpy()
 
-    collected_ids = collected_collection["SwitchBAX"]
-    acq_bin_maxes = [max_in_bin(Y, collected_ids[:i], bins_start, bins_end) for i in range(len(collected_ids))]
-    actual_max = max_in_bin(Y, np.arange(len(Y)), bins_start, bins_end)
+    collected_Y = collected_collection["SwitchBAX"]
+    acq_bin_maxes = [max_in_bin(collected_Y[:i], bins_start, bins_end) for i in range(len(collected_Y))]
+    actual_max = max_in_bin(Y, bins_start, bins_end)
     for i in range(len(bins_start)):
         plt.plot(np.asarray(acq_bin_maxes)[:, i], c=f"C{i}", label=f"{bins_start[i]}-{bins_end[i]}")
 
     plt.hlines(
         actual_max,
         0,
-        len(collected_ids),
+        len(collected_Y),
         colors=[f"C{i}" for i in range(len(bins_start))],
         ls="dashed",
     )

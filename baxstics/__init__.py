@@ -13,8 +13,8 @@ from baxstics.problem import (
 )
 
 __all__ = [
-    "X_BOUNDS",
     "XCOLS",
+    "X_BOUNDS",
     "YCOLS",
     "TopKPerBin",
     "grid_index",

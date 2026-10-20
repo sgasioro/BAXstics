@@ -83,7 +83,7 @@ Create a virtual environment and install the dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install numpy scikit-learn pandas matplotlib scipy tqdm
-pip install "abbot @ git+ssh://git@github.com/sgasioro/abbot.git@aff45dae558279ea6ebc7c2f9bb12a43f5afc48a"
+pip install "abbot @ git+ssh://git@github.com/sgasioro/abbot.git@45368343245f4a3dbf79870ebbe226c03ac46d33"
 ```
 
 abbot is installed over SSH, so this needs SSH access to the abbot repository.
