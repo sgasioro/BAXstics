@@ -1,7 +1,7 @@
 """In-silico benchmark of BAX strategies on a hydrogenolysis surrogate, on abbot.
 
 For each strategy, start from a few random grid points and let the policy pick
-the rest (in batches of 1 or 2), tracking how many points of the true target set
+the rest (in batches of 2), tracking how many points of the true target set
 it has collected and how well the GP's estimate of the target set matches it.
 Saves a plot of the maximum acquired yield per selectivity bin for SwitchBAX.
 """
@@ -16,9 +16,8 @@ import warnings
 import numpy as np
 import pandas as pd
 import torch
-from abbot import MockDatasetExperiment
+from abbot import MockDatasetExperiment, drive
 from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 from baxstics import XCOLS, YCOLS, TopKPerBin, make_campaign, raw_mean_std
 
@@ -29,18 +28,6 @@ if os.path.exists(_style):
     plt.style.use(_style)
 
 seed = 0
-
-
-def build_batch_array(Nmax, addtarget):
-    """Random batch sizes of 1 or 2 summing to ``addtarget``."""
-    rng = np.random.default_rng(seed)
-    for _ in range(1000):
-        intarrs = rng.integers(1, 3, size=Nmax)
-        sumarrs = np.cumsum(intarrs)
-        if np.any(sumarrs == addtarget):
-            Nid = np.where(sumarrs == addtarget)[0]
-            return intarrs[: Nid[0] + 1]
-    raise ValueError("no batch sequence sums to the target")
 
 
 def max_in_bin(y_here, bins_start, bins_end):
@@ -97,7 +84,7 @@ def get_jaccard(predicted_ids, true_target_ids):
     return len(a & b) / len(a | b) if a | b else 1.0
 
 
-def run_strategy(strategy, X, Y, goal, n_initial, batches_arr, n_posterior_samples, repeat):
+def run_strategy(strategy, X, Y, goal, n_initial, n_iters, batch_size, n_posterior_samples, repeat):
     """One campaign replaying the grid's known outputs; returns the history and
     per-shot metrics."""
     grid = torch.as_tensor(X, dtype=torch.double)
@@ -114,18 +101,20 @@ def run_strategy(strategy, X, Y, goal, n_initial, batches_arr, n_posterior_sampl
     for i in np.random.choice(len(X), n_initial):
         campaign.record(grid[i], torch.as_tensor(Y[i]))
 
-    n_obtained, jaccard, switched = [], [], []
-    for batch_size in tqdm(batches_arr):
-        campaign.step(experiment, lambda y: y, n=int(batch_size))
-        mean, _ = raw_mean_std(campaign, grid)
-        predicted = goal.identify_subspace(mean, grid)
+    metrics = {"n_obtained": [], "jaccard_posterior_index": [], "switch_strategy": []}
+
+    def record_metrics(state, model):
+        """After each batch: one entry per acquired point in it."""
         collected_X = campaign.history.designs
-        # For metrics, one entry per acquired point in the batch
-        for i_batch in range(batch_size - 1, -1, -1):
-            n_obtained.append(get_n_obtained(collected_X[: len(collected_X) - i_batch], target_X))
-            jaccard.append(get_jaccard(predicted, true_target_ids))
-            switched.append(campaign.policy.switched)
-    metrics = {"n_obtained": n_obtained, "jaccard_posterior_index": jaccard, "switch_strategy": switched}
+        mean, _ = raw_mean_std(campaign, grid)
+        jaccard = get_jaccard(goal.identify_subspace(mean, grid), true_target_ids)
+        for n in range(n_initial + len(metrics["n_obtained"]) + 1, len(collected_X) + 1):
+            metrics["n_obtained"].append(get_n_obtained(collected_X[:n], target_X))
+            metrics["jaccard_posterior_index"].append(jaccard)
+            metrics["switch_strategy"].append(campaign.policy.switched)
+
+    campaign.add_hook(record_metrics)
+    drive(campaign, experiment, lambda y: y, n_total=n_initial + n_iters, batch_size=batch_size)
     return campaign.history, metrics
 
 
@@ -139,7 +128,7 @@ if __name__ == "__main__":
     n_posterior_samples = 5  # relevant for InfoBAX / SwitchBAX's fallback
     n_initial = 5  # Number of initial datapoints
     n_iters = 50  # Number of measurements to be performed
-    batches_arr = build_batch_array(n_iters, n_iters)
+    batch_size = 2
     n_repeats = 1  # Repeats with different dataset initializations
 
     strategies = ["US", "MeanBAX", "SwitchBAX"]
@@ -150,7 +139,7 @@ if __name__ == "__main__":
         for j in range(n_repeats):  # to see variance w.r.t initial datapoint choice
             print(f"Using strategy: {strategy}, repeat number: {j}")
             history, m = run_strategy(
-                strategy, X, Y, goal, n_initial, batches_arr, n_posterior_samples, j
+                strategy, X, Y, goal, n_initial, n_iters, batch_size, n_posterior_samples, j
             )
             for key, values in m.items():
                 metrics[strategy][key].append(values)

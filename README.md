@@ -83,7 +83,7 @@ Create a virtual environment and install the dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install numpy scikit-learn pandas matplotlib scipy tqdm
-pip install "abbot @ git+ssh://git@github.com/sgasioro/abbot.git@45368343245f4a3dbf79870ebbe226c03ac46d33"
+pip install "abbot @ git+ssh://git@github.com/sgasioro/abbot.git@c654fd0928bd6097d92abb410f52a86f9c3d9a2a"
 ```
 
 abbot is installed over SSH, so this needs SSH access to the abbot repository.
@@ -114,7 +114,7 @@ cd codes
 python run_algo.py
 ```
 
-This fits one GP per output, runs the BAX acquisition loop in batches of 1 or 2,
+This fits one GP per output, runs the BAX acquisition loop in batches of 2,
 and saves a plot of the maximum acquired yield per selectivity bin versus the
 number of experiments.
 
