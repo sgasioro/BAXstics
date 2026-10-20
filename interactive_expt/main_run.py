@@ -1,16 +1,13 @@
 from pandas import DataFrame, read_csv
 
-from utils_activelearning import fetch_data, MODELS_DIR, DATASETS_DIR, MGPR, XCOLS, YCOLS, fit_matern_hypers, TopKBinAlgorithm, SCALERS, batch_acquisition
+from utils_activelearning import fetch_data, propose, save_model, MODELS_DIR, DATASETS_DIR, XCOLS, YCOLS
 import solara
 from plotly.subplots import make_subplots
-from solara.components.columns import Columns
 from solara.components.file_drop import FileDrop
 from typing import Optional, cast
-from sklearn.gaussian_process.kernels import WhiteKernel, ConstantKernel, Matern
 import sys
 import numpy as np
 import plotly.graph_objects as go
-import json
 # Additions for Interface
 # UQ Plot
 # 3D Grid (of design space)
@@ -18,13 +15,8 @@ import json
 # Dataset Update Trigger save -> Button Pop up
 # Hypers chosen iteration -- append |
 # Throw in unit tests
-# Seeding (SKlearn-BAX)
-import random
 
 SEED = 0
-def set_all_seeds(seed):
-    np.random.seed(seed)
-    random.seed(seed)
 
 
 def check_within_error(y_true, y_pred, y_err):
@@ -48,31 +40,12 @@ def check_within_error(y_true, y_pred, y_err):
 
     return result
 
-def kernel_hyperparams_to_dict(kernel):
-    params = kernel.get_params()
-    hyperparams = {}
-    for key, value in params.items():
-        if isinstance(value, (float, int, str, tuple)):  # Simple types
-            hyperparams[key] = value
-        elif hasattr(value, 'bounds') and hasattr(value, 'length_scale'):  # Example: RBF, ConstantKernel
-            hyperparams[key] = {
-                "bounds": np.asarray(value.bounds).tolist(),  # Convert numpy array to list
-                "hyperparameter": np.asarray(value.length_scale).tolist() if hasattr(value, "length_scale") else None
-            }
-        elif hasattr(value, 'k1') and hasattr(value, 'k2'):  # For Sum or Product kernels
-            hyperparams[key] = {
-                "k1": kernel_hyperparams_to_dict(value.k1),
-                "k2": kernel_hyperparams_to_dict(value.k2),
-            }
-        else:
-            hyperparams[key] = str(value)  # Catch-all for unexpected types
-    return hyperparams
 
 class ProgramState:
 
     df = solara.reactive(cast(Optional[DataFrame], None))
     text_model_used = solara.reactive(cast(Optional[str], None))
-    all_models = None
+    campaign = None
     latest_ct = solara.reactive(cast(Optional[int], None))
     nnext_batch = solara.reactive(False)
     got_next_measurement = solara.reactive(False)
@@ -87,183 +60,64 @@ class ProgramState:
 
     @staticmethod
     def load_from_file(file):
-        df = read_csv(file["file_obj"])
-        ProgramState.df.value = df
-        X, Y, X_norm, Y_norm = fetch_data(df)
-        ProgramState.df.value = df
-        collected_ids = list(np.arange(0, X_norm.shape[0])[Y[:, 0] >= 0])
-        ct = len(collected_ids)
-        ProgramState.latest_ct.value = ct
-        ProgramState.setup_model()
-        ProgramState.disable_save_button.value = True
-
-    
+        ProgramState.load_df(read_csv(file["file_obj"]))
 
     @staticmethod
     def load_latest_dset():
-        fpath = DATASETS_DIR / f"exptdata_latest.csv"
-        df = read_csv(fpath)
-        X, Y, X_norm, Y_norm = fetch_data(df)
+        ProgramState.load_df(read_csv(DATASETS_DIR / "exptdata_latest.csv"))
+
+    @staticmethod
+    def load_df(df):
+        _, _, measured = fetch_data(df)
         ProgramState.df.value = df
-        collected_ids = list(np.arange(0, X_norm.shape[0])[Y[:, 0] >= 0])
-        ct = len(collected_ids)
-        ProgramState.latest_ct.value = ct
-        ProgramState.setup_model()
+        ProgramState.latest_ct.value = int(measured.sum())
         ProgramState.disable_save_button.value = True
 
-        
-    
     @staticmethod
-    def setup_model():
-        df = ProgramState.df.value
-        X, Y, X_norm, Y_norm = fetch_data(df)
-
-        x_train = X_norm[Y[:, 0] >= 0]
-        y_train = Y_norm[Y[:, 0] >= 0]
-
-        collected_ids = list(np.arange(0, X_norm.shape[0])[Y[:, 0] >= 0])
-        ct = len(collected_ids)
-        model_file = MODELS_DIR / f"model_latest.pkl"
-
-        n_features = len(XCOLS)
-        n_properties = len(YCOLS)
-                
-        if model_file.exists():
-            models = MGPR.load(model_file)
-            
-        else:
-            kernel_initial = ConstantKernel(
-            constant_value=1.0, constant_value_bounds=[0.01, 3.0]
-            ) * Matern(
-                nu=5 / 2,
-                length_scale=n_features * [1.0],
-                length_scale_bounds=n_features * [[0.01, 3.0]],
-            ) + WhiteKernel(
-                noise_level=0.01, noise_level_bounds="fixed"
-            )
-            kernel_initial_list = n_properties * [kernel_initial]
-            models = MGPR(kernel_list=kernel_initial_list)
-
-        kernel_initial_list = models.kernel_list
-        kernel_list = fit_matern_hypers(x_train=x_train,y_train=y_train,kernel_list=kernel_initial_list)
-
-        ProgramState.all_models = MGPR(kernel_list=kernel_list)
-
-    @staticmethod   
     def update_model_get_next_measurement():
         df = ProgramState.df.value
-        set_all_seeds(0)
-        if ProgramState.nnext_batch.value:
-            batch_size = 2
-        else:
-            batch_size = 1
-        multi_gpr = ProgramState.all_models
-        X, Y, X_norm, Y_norm = fetch_data(df)
+        batch_size = 2 if ProgramState.nnext_batch.value else 1
+        next_ids, mean, std, campaign = propose(df, batch_size, seed=SEED)
 
-        x_train = X_norm[Y[:, 0] >= 0]
-        y_train = Y_norm[Y[:, 0] >= 0]
-
-        collected_ids = list(np.arange(0, X_norm.shape[0])[Y[:, 0] >= 0])
-        bins_start = [9, 11, 13, 15, 17]
-        bins_end = [11, 13, 15, 17, 19]
-        algorithm = TopKBinAlgorithm(
-            user_algo_params={
-                "scalers": SCALERS,
-                "bins_start": bins_start,
-                "bins_end": bins_end,
-                "num_points_per_bin": 1,
-                "bin_epsilon": 0.0,
-            }
-        )
-        strategy = "SwitchBAX"
-        n_posterior_samples = 10
-
-        multi_gpr.fit(x_train, y_train)
-        next_ids, model = batch_acquisition(
-            x_train,
-            y_train,
-            X_norm,
-            Y_norm,
-            strategy,
-            algorithm,
-            multi_gpr,
-            collected_ids,
-            n_posterior_samples,
-            batch_size,
-        )
-        posterior_mean, posterior_std = model.predict(X_norm)
-
-        plot_means = SCALERS[1].inverse_transform(posterior_mean)
-        df["Predicted Norm Median"] = posterior_mean[:, 1]
-        df["Predicted Norm Yield"] = posterior_mean[:, 0]
-        
-        df["Std Norm Median"] = posterior_std[:, 1]
-        df["Std Norm Yield"] = posterior_std[:, 0]
-        df["Predicted Median"] = plot_means[:, 1]
-        df["Predicted Yield"] = plot_means[:, 0]
-        # ProgramState.df.value = df
+        df["Predicted Median"] = mean[:, 1]
+        df["Predicted Yield"] = mean[:, 0]
+        df["Std Median"] = std[:, 1]
+        df["Std Yield"] = std[:, 0]
 
         ProgramState.next_data = next_ids
-        ProgramState.all_models = model
+        ProgramState.campaign = campaign
         ProgramState.latest_ct.value = None
         ProgramState.got_next_measurement.value = True
-        #ProgramState.disable_save_button.value = False
 
     @staticmethod
     def reset():
         ProgramState.df.value = None
 
-        
-
-
-
     @staticmethod
     def save_dataset_and_model():
         df = ProgramState.df.value
-        
-        X, Y, X_norm, Y_norm = fetch_data(df)
-        collected_ids = list(np.arange(0, X_norm.shape[0])[Y[:, 0] >= 0])
-        ct = len(collected_ids)
+        _, _, measured = fetch_data(df)
+        ct = int(measured.sum())
         df.to_csv(DATASETS_DIR / f"exptdata_{ct}.csv")
         df.to_csv(DATASETS_DIR / f"exptdata_latest.csv")
-        model_file_1 = MODELS_DIR / f"model_latest.pkl"
-        model_file_2 = MODELS_DIR / f"model_{ct}.pkl"
-        ProgramState.all_models.save(model_file_1)
-        ProgramState.all_models.save(model_file_2)
+        if ProgramState.campaign is not None:
+            save_model(ProgramState.campaign, [MODELS_DIR / "hypers_latest.json", MODELS_DIR / f"hypers_{ct}.json"])
 
-        hypers_file_1 = MODELS_DIR / f"hypers_latest.json"
-        hypers_file_2 = MODELS_DIR / f"hypers_{ct}.json"
-
-        with open(hypers_file_1, "w") as f:
-            kl = ProgramState.all_models.kernel_list
-            
-            hp_list = [kernel_hyperparams_to_dict(k) for k in kl]
-            
-            json.dump(hp_list, f)
-
-        with open(hypers_file_2, "w") as f:
-            kl = ProgramState.all_models.kernel_list
-            
-            hp_list = [kernel_hyperparams_to_dict(k) for k in kl]
-            
-            json.dump(hp_list, f)
-        
-        
         ProgramState.latest_ct.value = ct
         ProgramState.disable_save_button.value = True
 
     @staticmethod
     def add_data_point_to_df():
         df = ProgramState.df.value
-        df[YCOLS[0]][ProgramState.next_data[0]] = ProgramState.yield_new.value
-        df[YCOLS[1]][ProgramState.next_data[0]] = ProgramState.median_new.value
+        df.loc[ProgramState.next_data[0], YCOLS[0]] = ProgramState.yield_new.value
+        df.loc[ProgramState.next_data[0], YCOLS[1]] = ProgramState.median_new.value
         ProgramState.disable_save_button.value = False
-    
+
     @staticmethod
     def add_2data_point_to_df():
         df = ProgramState.df.value
-        df[YCOLS[0]][ProgramState.next_data[1]] = ProgramState.yield_new2.value
-        df[YCOLS[1]][ProgramState.next_data[1]] = ProgramState.median_new2.value
+        df.loc[ProgramState.next_data[1], YCOLS[0]] = ProgramState.yield_new2.value
+        df.loc[ProgramState.next_data[1], YCOLS[1]] = ProgramState.median_new2.value
         ProgramState.disable_save_button.value = False
 
 @solara.component
@@ -293,8 +147,8 @@ def Page():
             if ct_val is not None:
                 fname1 = DATASETS_DIR / f"exptdata_latest.csv"
                 fname2 = DATASETS_DIR / f"exptdata_{ct_val}.csv"
-                model_file_1 = MODELS_DIR / f"model_latest.pkl"
-                model_file_2 = MODELS_DIR / f"model_{ct_val}.pkl"
+                model_file_1 = MODELS_DIR / f"hypers_latest.json"
+                model_file_2 = MODELS_DIR / f"hypers_{ct_val}.json"
                 if fname1.exists():
                     solara.Success(f"Saved csv to {fname1.absolute()} and {fname2.absolute()}")
                 else:
